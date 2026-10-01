@@ -26,10 +26,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: 読み仮名ライブラリを入れる
-        run: pip install pykakasi
+      - name: 読み仮名・祝日ライブラリを入れる
+        run: pip install pykakasi holidays
       - name: 全国のバス時刻表を取得・変換
         run: python scripts/build_data.py --out _site/data
+        env:
+          ODPT_KEY: ${{ secrets.ODPT_KEY }}   # 東急バス用（未設定なら東急バスだけ取り込まずに続行）
       - name: アプリ本体をコピー
         run: cp -r web/* _site/
       - uses: actions/upload-pages-artifact@v3
