@@ -1,0 +1,47 @@
+# 毎日 午前3時（日本時間）に全国のバス時刻表を取り込み、GitHub Pages に公開します（無料）
+name: データ更新と公開
+
+on:
+  schedule:
+    - cron: "0 18 * * *"   # UTC 18:00 = 日本時間 3:00
+  workflow_dispatch:        # 「Run workflow」ボタンで手動実行
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 読み仮名ライブラリを入れる
+        run: pip install pykakasi
+      - name: 全国のバス時刻表を取得・変換
+        run: python scripts/build_data.py --out _site/data
+      - name: アプリ本体をコピー
+        run: cp -r web/* _site/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
