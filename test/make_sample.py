@@ -78,3 +78,12 @@ if __name__ == "__main__":
         # 全便に対し 1番目の停留所で +180秒(3分遅れ) を入れる
         ups = [(f"R1_{n}", 1, 180) for n in range(200)]
         open(sys.argv[2], "wb").write(rt(ups))
+
+
+def vp(entries):
+    """entries: list of (trip_id, current_stop_sequence, status, timestamp)  status 1=STOPPED_AT 2=IN_TRANSIT_TO"""
+    msg = fld(1, 2, s(1, "2.0") + fld(3, 0, int(time.time())))
+    for i, (tid, seq, st, ts) in enumerate(entries):
+        v = fld(1, 2, s(1, tid)) + fld(3, 0, seq) + fld(4, 0, st) + fld(5, 0, ts)
+        msg += fld(2, 2, s(1, f"v{i}") + fld(4, 2, v))
+    return msg

@@ -12,6 +12,7 @@ const ICON = {
   search: '<svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/></svg>',
   bus: '<svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="15" rx="3"/><path d="M4 11h16M8 18v2M16 18v2"/><circle cx="8" cy="14.5" r=".8"/><circle cx="16" cy="14.5" r=".8"/></svg>',
   grip: '<svg viewBox="0 0 20 14"><path d="M2 2h16M2 7h16M2 12h16"/></svg>',
+  ext: '<svg class="chev" viewBox="0 0 14 14" style="width:13px;height:13px"><path d="M5 2h7v7M12 2 3 11"/></svg>',
 };
 
 /* ================================================================ 保存（お気に入り） */
@@ -87,11 +88,23 @@ const td = new TextDecoder();
 const msg = b => pbRead(b).fields();
 const int = v => Number(BigInt.asIntN(64, v));
 
-function parseTripUpdates(u8) {
-  const trips = new Map();
+function parseFeed(u8) {
+  const trips = new Map(), vehicles = new Map();
   for (const [no, ent] of msg(u8)) {
     if (no !== 2) continue;
     for (const [eno, tu] of msg(ent)) {
+      if (eno === 4) { // VehiclePosition（車両位置）
+        const v = { trip: "", seq: null, stop: "", status: 2, ts: null };
+        for (const [vno, vv] of msg(tu)) {
+          if (vno === 1) for (const [dno, dv] of msg(vv)) { if (dno === 1) v.trip = td.decode(dv); }
+          else if (vno === 3) v.seq = int(vv);
+          else if (vno === 4) v.status = int(vv);
+          else if (vno === 5) v.ts = int(vv);
+          else if (vno === 7) v.stop = td.decode(vv);
+        }
+        if (v.trip) vehicles.set(v.trip, v);
+        continue;
+      }
       if (eno !== 3) continue;
       const t = { id: "", delay: null, canceled: false, stu: [] };
       for (const [tno, v] of msg(tu)) {
@@ -119,7 +132,7 @@ function parseTripUpdates(u8) {
       if (t.id) trips.set(t.id, t);
     }
   }
-  return trips;
+  return { trips, vehicles };
 }
 
 const rtCache = new Map(); // url -> {at, trips, ok}
@@ -130,11 +143,11 @@ async function getRT(url) {
   const target = CFG.RT_PROXY ? CFG.RT_PROXY + encodeURIComponent(url) : url;
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 8000);
-  let res = { at: Date.now(), trips: null, ok: false };
+  let res = { at: Date.now(), trips: new Map(), vehicles: new Map(), ok: false };
   try {
     const r = await fetch(target, { signal: ctl.signal, cache: "no-store" });
     if (!r.ok) throw new Error(r.status);
-    res = { at: Date.now(), trips: parseTripUpdates(new Uint8Array(await r.arrayBuffer())), ok: true };
+    res = { at: Date.now(), ...parseFeed(new Uint8Array(await r.arrayBuffer())), ok: true };
   } catch (e) { /* CORS やネットワーク不可 → 時刻表で表示 */ }
   clearTimeout(timer);
   rtCache.set(url, res);
@@ -162,6 +175,25 @@ function applyRT(trip, dep, schedEtaSec, nowMs) {
   return { eta: schedEtaSec + delay, delay, live: true };
 }
 
+// 車両位置からの遅れ推定: 「バスが今いる停留所」の時刻表時刻と現在時刻の差を遅れとみなす
+function applyVP(v, dep, schedEtaSec, nowMs) {
+  const [, , , , , seq, stopId, prev] = dep;
+  if (!v) return null;
+  let vseq = v.seq;
+  if (vseq === null && v.stop === stopId) vseq = seq;
+  if (vseq === null) return null;
+  if (vseq > seq) return { passed: true };
+  let off = null; // 時刻表上「バスのいる停留所」→「このバス停」の所要秒
+  if (vseq === seq) off = 0;
+  else if (prev) for (let i = 0; i < prev.length; i += 2) if (prev[i] === vseq) { off = prev[i + 1]; break; }
+  if (off === null) return null; // まだ遠い（手前12停留所より前）→ 時刻表どおり
+  const ago = v.ts ? Math.max(0, nowMs / 1000 - v.ts) : 0;
+  const schedAtVeh = schedEtaSec - off;                    // 今から見た「バスのいる停留所」の予定時刻
+  const delay = Math.max(0, -ago - schedAtVeh);            // 予定より遅れている秒数（早着は0扱い）
+  const eta = v.status === 1 && vseq === seq ? 0 : schedEtaSec + delay;
+  return { eta, delay, live: true, near: seq - vseq };
+}
+
 /* ================================================================ 次のバスを計算 */
 async function upcoming(cid, k, { limit = 20 } = {}) {
   const [stop, cal, co] = await Promise.all([getJSON(`c/${cid}/s/${k}.json`), getJSON(`c/${cid}/cal.json`), getCompany(cid)]);
@@ -176,29 +208,32 @@ async function upcoming(cid, k, { limit = 20 } = {}) {
       if (!(sid in act)) act[sid] = serviceOn(cal, sid, d);
       if (!act[sid]) continue;
       const eta = dep[0] + offset - nowSec;
-      if (eta >= -90 && eta < 26 * 3600) list.push({ dep, eta, sched: eta, day: offset > 0 ? "明日" : "" });
+      if (eta >= -1200 && eta < 26 * 3600) list.push({ dep, eta, sched: eta, day: offset > 0 ? "明日" : "" });
     }
   };
   consider(yest, -86400);
   consider(today, 0);
-  const rt = co && co.rt ? await getRT(co.rt) : null;
-  if (rt && rt.ok) {
-    for (const it of list) {
-      const a = applyRT(rt.trips.get(it.dep[4]), it.dep, it.sched, now);
-      if (a) Object.assign(it, a);
-    }
+  const [rt, vp] = await Promise.all([co && co.rt ? getRT(co.rt) : null, co && co.vp ? getRT(co.vp) : null]);
+  for (const it of list) {
+    const a = (rt && rt.ok && applyRT(rt.trips.get(it.dep[4]), it.dep, it.sched, now)) ||
+              (vp && vp.ok && applyVP(vp.vehicles.get(it.dep[4]), it.dep, it.sched, now));
+    if (a) Object.assign(it, a);
   }
-  let res = list.filter(x => x.eta >= -30 || x.canceled).sort((a, b) => a.eta - b.eta);
+  let res = list.filter(x => !x.passed && (x.canceled || (x.live ? x.eta >= -30 : x.sched >= -30)))
+    .sort((a, b) => a.eta - b.eta);
   if (res.filter(x => !x.canceled).length === 0) { // 本日の運行終了 → 明日の始発
     list.length = 0;
     consider(tom, 86400);
     res = list.sort((a, b) => a.eta - b.eta);
   }
-  return { stop, co, rt, items: res.slice(0, limit), at: now };
+  const live = (rt && rt.ok) ? "tu" : (vp && vp.ok) ? "vp" : "";
+  return { stop, co, rt: { ok: !!live, kind: live }, items: res.slice(0, limit), at: now };
 }
 
 /* ================================================================ 画面共通 */
+let lastBar = {};
 function setBar({ title = "", back = null, right = "" }) {
+  lastBar = { title, back };
   $("#barTitle").textContent = title;
   $("#barLeft").innerHTML = back ? `<button class="back" id="backBtn">${ICON.back}<span>${esc(back.label)}</span></button>` : "";
   if (back) $("#backBtn").onclick = () => (history.state && history.state.from !== undefined) ? history.back() : go(back.to, true);
@@ -223,6 +258,7 @@ const minHTML = (it, cls = "min") => {
     ? `<div class="${cls} soon">まもなく</div>`
     : `<div class="${cls}${m <= 3 ? " soon" : ""}">${m}<small>分</small></div>`;
 };
+const PREF_KANA = "ほっかいどう,あおもりけん,いわてけん,みやぎけん,あきたけん,やまがたけん,ふくしまけん,いばらきけん,とちぎけん,ぐんまけん,さいたまけん,ちばけん,とうきょうと,かながわけん,にいがたけん,とやまけん,いしかわけん,ふくいけん,やまなしけん,ながのけん,ぎふけん,しずおかけん,あいちけん,みえけん,しがけん,きょうとふ,おおさかふ,ひょうごけん,ならけん,わかやまけん,とっとりけん,しまねけん,おかやまけん,ひろしまけん,やまぐちけん,とくしまけん,かがわけん,えひめけん,こうちけん,ふくおかけん,さがけん,ながさきけん,くまもとけん,おおいたけん,みやざきけん,かごしまけん,おきなわけん".split(",");
 const normKana = s => (s || "").normalize("NFKC").toLowerCase().replace(/[ァ-ヶ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0x60));
 
 let timers = [];
@@ -253,6 +289,7 @@ function renderHome() {
           ${editing
             ? `<button class="minus" data-del="${i}" aria-label="${esc(f.name)}を削除"><i></i></button>
                <span class="handle" aria-hidden="true">${ICON.grip}</span>`
+            : f.ext ? `<div class="fav-eta"><div class="sub">公式の接近情報</div></div>${ICON.ext}`
             : `<div class="fav-eta" id="eta${i}"><div class="sub">…</div></div>${ICON.chev}`}
         </div>`).join("")}
     </div>
@@ -270,11 +307,12 @@ function renderHome() {
   } else {
     list.querySelectorAll(".row").forEach(r => r.onclick = () => {
       const f = favs[+r.dataset.i];
-      go(`#/c/${encodeURIComponent(f.cid)}/${f.k}`);
+      if (f.ext) window.open(f.ext, "_blank", "noopener");
+      else go(`#/c/${encodeURIComponent(f.cid)}/${f.k}`);
     });
     const refresh = () => favs.forEach(async (f, i) => {
       const box = $("#eta" + i);
-      if (!box) return;
+      if (!box || f.ext) return;
       try {
         const u = await upcoming(f.cid, f.k, { limit: 3 });
         const next = u.items.find(x => !x.canceled);
@@ -344,14 +382,15 @@ async function renderSearch() {
     qc.hidden = !w;
     sessionStorage.setItem("q", q.value);
     const html = idx.prefs.map(p => {
-      const cs = p.companies.filter(c => !w || normKana(c.name).includes(w) || (c.y || "").includes(w) || normKana(p.name).includes(w));
+      const cs = p.companies.filter(c => !w || normKana(c.name).includes(w) || (c.y || "").includes(w) || normKana(p.name).includes(w) || (PREF_KANA[p.code - 1] || "").includes(w));
       if (!cs.length) return "";
       return `<div class="section-h">${esc(p.name)}</div><div class="group">${cs.map(c =>
         `<a class="row" href="#/c/${encodeURIComponent(c.id)}"><div class="main"><div class="t">${esc(c.name)}</div>
-         ${c.rt ? '<div class="s"><span class="dot live"></span>リアルタイム対応</div>' : ""}</div>${ICON.chev}</a>`).join("")}</div>`;
+         ${c.ext ? '<div class="s">公式の接近情報サービスを開きます</div>'
+           : (c.rt || c.vp) ? '<div class="s"><span class="dot live"></span>リアルタイム対応</div>' : ""}</div>${ICON.chev}</a>`).join("")}</div>`;
     }).join("");
     $("#list").innerHTML = html || `<div class="empty">「${esc(q.value)}」に一致するバス会社はありません</div>`;
-    $("#list").insertAdjacentHTML("beforeend", `<p class="note">データ: GTFSデータリポジトリ（gtfs-data.jp）／各事業者。${esc(idx.updated)} 更新</p>`);
+    $("#list").insertAdjacentHTML("beforeend", `<p class="note">データ: GTFSデータリポジトリ（gtfs-data.jp）、公共交通オープンデータセンター／各事業者。${esc(idx.updated)} 更新</p>`);
   };
   q.oninput = draw;
   qc.onclick = () => { q.value = ""; draw(); q.focus(); };
@@ -360,8 +399,37 @@ async function renderSearch() {
 const errorHTML = () => `<div class="empty">データを読み込めませんでした。<br>電波の良い場所でもう一度お試しください。</div>`;
 
 /* ================================================================ バス停一覧（五十音順） */
+function starButton(cid, k, makeFav) {
+  setBar({ ...lastBar, right: `<button class="star ${isFav(cid, k) ? "on" : ""}" id="star" aria-label="お気に入り">${ICON.star}</button>` });
+  const star = $("#star");
+  star.onclick = () => {
+    if (isFav(cid, k)) {
+      favs = favs.filter(f => !(f.cid === cid && f.k === k));
+      toast("お気に入りから外しました");
+    } else {
+      favs.push(makeFav());
+      toast("お気に入りに追加しました");
+    }
+    saveFavs();
+    star.classList.toggle("on", isFav(cid, k));
+    star.classList.add("pop"); setTimeout(() => star.classList.remove("pop"), 160);
+  };
+}
+
+// 時刻表データが公開されていない会社（公式の接近情報サービスへのリンク）
+function renderExt(co) {
+  setBar({ title: co.name, back: { label: "バス会社", to: "#/search" } });
+  starButton(co.id, "_ext", () => ({ cid: co.id, k: "_ext", name: co.name, co: "公式の接近情報サービス", ext: co.ext }));
+  view.innerHTML = `<div class="stop-head"><div class="name">${esc(co.name)}</div></div>
+    <div class="hero"><div class="meta">${esc(co.note || "公式の接近情報サービスを開きます。")}</div>
+      <a class="open-ext" href="${esc(co.ext)}" target="_blank" rel="noopener">公式の接近情報を開く ${ICON.ext}</a></div>
+    <p class="note">右上の ☆ でお気に入りに追加すると、ホーム画面からワンタップで開けます。<br>
+    公式ページ側でよく使うバス停を登録しておくと便利です。</p>`;
+}
+
 async function renderCompany(cid) {
   const co = await getCompany(cid).catch(() => null);
+  if (co && co.ext) return renderExt(co);
   setBar({ title: co ? co.name : "バス停", back: { label: "バス会社", to: "#/search" } });
   view.innerHTML = `<div class="searchwrap"><label class="search">${ICON.search}
       <input id="q" type="search" placeholder="バス停名で絞り込み" autocomplete="off"></label></div>
@@ -428,8 +496,9 @@ async function renderStop(cid, k) {
     const live = data.rt && data.rt.ok;
     const first = items.find(x => !x.canceled);
     const pole = d => { const p = data.stop.p[d[6]]; return p ? `<span class="pill">${esc(p)}番のりば</span>` : ""; };
-    const delayPill = x => x.live && x.delay >= 60 ? `<span class="pill late">${Math.round(x.delay / 60)}分遅れ</span>`
-      : x.live ? `<span class="pill live">運行情報</span>` : "";
+    const nearPill = x => x.near === undefined ? "" : `<span class="pill live">${x.near === 0 ? "到着間近" : x.near + "つ前の停留所"}</span>`;
+    const delayPill = x => (x.live && x.delay >= 60 ? `<span class="pill late">${Math.round(x.delay / 60)}分遅れ</span>`
+      : x.live && x.near === undefined ? `<span class="pill live">運行情報</span>` : "") + nearPill(x);
     let html = `<div class="stop-head"><div class="name">${esc(data.stop.n)}</div><div class="co">${esc(co ? co.name : "")}</div></div>`;
     if (!first) {
       html += `<div class="empty">${ICON.bus}<br>このバス停から乗れる便はありません。</div>`;
@@ -454,9 +523,10 @@ async function renderStop(cid, k) {
     }
     const ago = Math.round((now - data.at) / 1000);
     html += `<div class="status-line"><span><span class="dot ${live ? "live" : ""}"></span>${live
-        ? "リアルタイム運行情報を反映" : co && co.rt ? "運行情報を取得できないため時刻表で表示" : "時刻表から計算"}・${ago < 5 ? "たった今" : ago + "秒前"}更新</span>
+        ? (data.rt.kind === "vp" ? "バスの現在位置から推定" : "リアルタイム運行情報を反映")
+        : co && (co.rt || co.vp) ? "運行情報を取得できないため時刻表で表示" : "時刻表から計算"}・${ago < 5 ? "たった今" : ago + "秒前"}更新</span>
       <button id="reload">更新</button></div>
-      <p class="note">道路状況により前後することがあります。${co && co.lic ? `データ: ${esc(co.name)}（${esc(co.lic)}）、GTFSデータリポジトリ` : ""}</p>`;
+      <p class="note">道路状況により前後することがあります。${co && co.note ? esc(co.note) + "。" : ""}${co && co.lic ? `データ: ${esc(co.src || co.name + "、GTFSデータリポジトリ")}（${esc(co.lic)}）` : ""}</p>`;
     view.innerHTML = html;
     $("#reload").onclick = load;
   };
