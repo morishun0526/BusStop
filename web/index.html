@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="バス接近">
+<meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<title>バス接近</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="bar">
+  <div class="bar-side left" id="barLeft"></div>
+  <div class="bar-title" id="barTitle"></div>
+  <div class="bar-side right" id="barRight"></div>
+</header>
+<main id="view"></main>
+<nav id="toolbar" hidden>
+  <button id="btnSearch" class="tool" aria-label="検索">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/></svg>
+  </button>
+  <button id="btnEdit" class="tool" aria-label="編集">
+    <svg viewBox="0 0 24 24" aria-hidden="true" class="ico-edit"><path d="M4 20h4L19 9l-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/></svg>
+    <span class="tool-done">完了</span>
+  </button>
+</nav>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
