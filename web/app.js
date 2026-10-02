@@ -367,30 +367,75 @@ function enableDrag(list) {
 }
 
 /* ================================================================ ①-1 都道府県別バス会社一覧 */
+let searchIdx = null;
+async function getSearchIndex() {
+  if (!searchIdx) searchIdx = getJSON("search.json").then(d => {
+    d.s.forEach(r => { r.push(normKana(r[0])); }); // r[4] = 検索用に正規化した名前
+    return d;
+  });
+  return searchIdx;
+}
+
 async function renderSearch() {
-  setBar({ title: "バス会社", back: { label: "お気に入り", to: "#/" } });
+  setBar({ title: "検索", back: { label: "お気に入り", to: "#/" } });
   view.innerHTML = `<div class="searchwrap"><label class="search">${ICON.search}
-      <input id="q" type="search" placeholder="会社名・都道府県で検索" autocomplete="off" enterkeyhint="search">
+      <input id="q" type="search" placeholder="バス停名で検索（例：渋谷駅）" autocomplete="off" enterkeyhint="search">
       <button class="clear" id="qc" hidden aria-label="クリア">✕</button></label></div>
     <div id="list"><div class="spinner"></div></div>`;
   let idx;
   try { idx = await getIndex(); } catch { $("#list").innerHTML = errorHTML(); return; }
+  const status = await getJSON("status.json").catch(() => ({}));
   const q = $("#q"), qc = $("#qc");
   q.value = sessionStorage.getItem("q") || "";
+  const footer = () => {
+    const ng = Object.values(status).filter(x => !x.ok);
+    return (ng.length ? `<p class="note warn">取り込めなかった会社：${ng.map(x => `<br>・${esc(x.name)}：${esc(x.msg)}`).join("")}</p>` : "") +
+      `<p class="note">データ: GTFSデータリポジトリ（gtfs-data.jp）、公共交通オープンデータセンター／各事業者。${esc(idx.updated)} 更新</p>`;
+  };
+  const coRow = c => `<a class="row" href="#/c/${encodeURIComponent(c.id)}"><div class="main"><div class="t">${esc(c.name)}</div>
+         ${c.ext ? '<div class="s">公式の接近情報サービスを開きます</div>'
+           : (c.rt || c.vp) ? '<div class="s"><span class="dot live"></span>リアルタイム対応</div>' : ""}</div>${ICON.chev}</a>`;
+
+  // 何も入力していないとき: 都道府県別のバス会社一覧
+  const drawCompanies = () => {
+    $("#list").innerHTML = idx.prefs.map(p => `<div class="section-h">${esc(p.name)}</div>
+      <div class="group">${p.companies.map(coRow).join("")}</div>`).join("") + footer();
+  };
+  // 入力したとき: バス停を検索（全国）
+  let seq = 0;
+  const drawStops = async w => {
+    const my = ++seq;
+    if (!searchIdx) $("#list").innerHTML = `<div class="spinner"></div>`;
+    let si;
+    try { si = await getSearchIndex(); } catch { $("#list").innerHTML = errorHTML(); return; }
+    if (my !== seq) return;
+    const hits = [];
+    for (const r of si.s) if (r[4].includes(w) || r[1].includes(w)) hits.push(r);
+    const pre = r => (r[4].startsWith(w) || r[1].startsWith(w)) ? 0 : 1;
+    hits.sort((a, b) => pre(a) - pre(b) || a[0].length - b[0].length || a[1].localeCompare(b[1], "ja"));
+    const MAX = 100;
+    const cos = [];
+    for (const p of idx.prefs) for (const c of p.companies)
+      if ((normKana(c.name).includes(w) || (c.y || "").includes(w)) && !cos.some(x => x.id === c.id)) cos.push(c);
+    let html = "";
+    if (hits.length) {
+      html += `<div class="section-h">バス停（${hits.length > MAX ? MAX + "件以上" : hits.length + "件"}）</div><div class="group">${hits.slice(0, MAX).map(r => {
+        const c = si.c[r[2]];
+        return `<a class="row" href="#/c/${encodeURIComponent(c[0])}/${r[3]}"><div class="main"><div class="t">${esc(r[0])}</div>
+          <div class="s">${esc(c[1])}${c[2] ? "・" + esc(c[2]) : ""}</div></div>${ICON.chev}</a>`;
+      }).join("")}</div>`;
+      if (hits.length > MAX) html += `<p class="note">候補が多いため先頭${MAX}件を表示しています。もう少し詳しく入力してください。</p>`;
+    }
+    if (cos.length) html += `<div class="section-h">バス会社</div><div class="group">${cos.map(coRow).join("")}</div>`;
+    $("#list").innerHTML = (html || `<div class="empty">「${esc(q.value)}」に一致するバス停はありません。<br>ひらがなや、一部だけ（例：「しぶや」）でも探せます。</div>`) + footer();
+  };
+  let t = null;
   const draw = () => {
     const w = normKana(q.value.trim());
     qc.hidden = !w;
     sessionStorage.setItem("q", q.value);
-    const html = idx.prefs.map(p => {
-      const cs = p.companies.filter(c => !w || normKana(c.name).includes(w) || (c.y || "").includes(w) || normKana(p.name).includes(w) || (PREF_KANA[p.code - 1] || "").includes(w));
-      if (!cs.length) return "";
-      return `<div class="section-h">${esc(p.name)}</div><div class="group">${cs.map(c =>
-        `<a class="row" href="#/c/${encodeURIComponent(c.id)}"><div class="main"><div class="t">${esc(c.name)}</div>
-         ${c.ext ? '<div class="s">公式の接近情報サービスを開きます</div>'
-           : (c.rt || c.vp) ? '<div class="s"><span class="dot live"></span>リアルタイム対応</div>' : ""}</div>${ICON.chev}</a>`).join("")}</div>`;
-    }).join("");
-    $("#list").innerHTML = html || `<div class="empty">「${esc(q.value)}」に一致するバス会社はありません</div>`;
-    $("#list").insertAdjacentHTML("beforeend", `<p class="note">データ: GTFSデータリポジトリ（gtfs-data.jp）、公共交通オープンデータセンター／各事業者。${esc(idx.updated)} 更新</p>`);
+    clearTimeout(t);
+    if (!w) { seq++; drawCompanies(); } else t = setTimeout(() => drawStops(w), 150);
   };
   q.oninput = draw;
   qc.onclick = () => { q.value = ""; draw(); q.focus(); };
@@ -418,7 +463,7 @@ function starButton(cid, k, makeFav) {
 
 // 時刻表データが公開されていない会社（公式の接近情報サービスへのリンク）
 function renderExt(co) {
-  setBar({ title: co.name, back: { label: "バス会社", to: "#/search" } });
+  setBar({ title: co.name, back: { label: "検索", to: "#/search" } });
   starButton(co.id, "_ext", () => ({ cid: co.id, k: "_ext", name: co.name, co: "公式の接近情報サービス", ext: co.ext }));
   view.innerHTML = `<div class="stop-head"><div class="name">${esc(co.name)}</div></div>
     <div class="hero"><div class="meta">${esc(co.note || "公式の接近情報サービスを開きます。")}</div>
@@ -430,7 +475,7 @@ function renderExt(co) {
 async function renderCompany(cid) {
   const co = await getCompany(cid).catch(() => null);
   if (co && co.ext) return renderExt(co);
-  setBar({ title: co ? co.name : "バス停", back: { label: "バス会社", to: "#/search" } });
+  setBar({ title: co ? co.name : "バス停", back: { label: "検索", to: "#/search" } });
   view.innerHTML = `<div class="searchwrap"><label class="search">${ICON.search}
       <input id="q" type="search" placeholder="バス停名で絞り込み" autocomplete="off"></label></div>
     <div id="list"><div class="spinner"></div></div>`;
@@ -469,7 +514,7 @@ async function renderStop(cid, k) {
   const co = await getCompany(cid).catch(() => null);
   const from = history.state && history.state.from;
   setBar({
-    title: "", back: { label: from === "#/" ? "お気に入り" : "バス停", to: `#/c/${encodeURIComponent(cid)}` },
+    title: "", back: { label: from === "#/" ? "お気に入り" : from === "#/search" ? "検索" : "バス停", to: `#/c/${encodeURIComponent(cid)}` },
     right: `<button class="star ${isFav(cid, k) ? "on" : ""}" id="star" aria-label="お気に入り">${ICON.star}</button>`,
   });
   view.innerHTML = `<div class="spinner"></div>`;

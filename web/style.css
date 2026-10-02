@@ -161,3 +161,6 @@ button.row:active, a.row:active { background: var(--press); }
 .toast.show { opacity: 1; }
 .open-ext { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 16px; height: 50px; border-radius: 12px; background: var(--accent); color: #fff; font-size: 17px; font-weight: 600; text-decoration: none; }
 .open-ext .chev { stroke: #fff; }
+.note.warn { color: var(--soon); }
+input[type="search"]::-webkit-search-cancel-button { -webkit-appearance: none; display: none; }
+.note.warn { overflow-wrap: anywhere; }

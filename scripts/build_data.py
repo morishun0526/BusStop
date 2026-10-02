@@ -25,6 +25,7 @@ import shutil
 import sys
 import time
 import unicodedata
+import urllib.error
 import urllib.request
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -243,16 +244,33 @@ def dump(path, obj):
 
 
 # ---------------------------------------------------------------- 取得
+class FetchError(Exception):
+    pass
+
+
+def _mask(url):
+    return re.sub(r"(consumerKey=)[^&]+", r"\1***", url)
+
+
 def http_get(url, tries=3):
     last = None
     for i in range(tries):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": UA})
-            with urllib.request.urlopen(req, timeout=120) as res:
+            with urllib.request.urlopen(req, timeout=180) as res:
                 return res.read()
+        except urllib.error.HTTPError as e:
+            body = ""
+            try:
+                body = e.read()[:200].decode("utf-8", "replace")
+            except Exception:
+                pass
+            last = FetchError(f"HTTP {e.code} {_mask(url)} {body}")
+            if e.code in (400, 401, 403, 404):  # 再試行しても変わらない
+                break
         except Exception as e:  # noqa
-            last = e
-            time.sleep(2 * (i + 1))
+            last = FetchError(f"{type(e).__name__}: {e} {_mask(url)}")
+        time.sleep(3 * (i + 1))
     raise last
 
 
@@ -320,12 +338,14 @@ def build_sources(out, path, existing_ids):
         sid = src["id"]
         if sid in existing_ids:
             continue
+        STATUS[sid] = {"name": src["name"], "ok": False, "msg": ""}
         base = {"id": sid, "name": src["name"], "prefs": src.get("prefs", []), "rt": src.get("rt", ""),
                 "vp": src.get("vp", ""), "lic": src.get("lic", ""), "src": src.get("src", ""),
                 "note": src.get("note", "")}
         try:
             if src["type"] == "link":  # データ非公開 → 公式の接近情報ページへのリンクだけ置く
                 res.append({**base, "ext": src["url"]})
+                STATUS[sid].update(ok=True, msg="公式リンク")
                 print(f"  link {sid}", flush=True)
                 continue
             if src["type"] == "gtfs":
@@ -333,7 +353,9 @@ def build_sources(out, path, existing_ids):
             elif src["type"] == "odpt":
                 key = os.environ.get("ODPT_KEY", "")
                 if not key:
-                    print(f"  skip {sid}: ODPT_KEY が未設定です（README の手順でキーを登録してください）", flush=True)
+                    msg = "ODPT_KEY が未設定です（GitHub の Secrets に登録してください）"
+                    STATUS[sid]["msg"] = msg
+                    print(f"  skip {sid}: {msg}", flush=True)
                     continue
                 z = odpt_to_gtfs(key, src["operator"])
             else:
@@ -341,10 +363,18 @@ def build_sources(out, path, existing_ids):
             n = convert_feed(z, os.path.join(out, "c", sid), with_prev=bool(base["vp"]))
             if n:
                 res.append(base)
+                STATUS[sid].update(ok=True, msg=f"{n} バス停")
                 print(f"  ok {sid} ({n} stops)", flush=True)
+            else:
+                STATUS[sid]["msg"] = "バス停が0件でした"
+                print(f"  skip {sid}: 0 stops", flush=True)
         except Exception as e:
+            STATUS[sid]["msg"] = str(e)[:300]
             print(f"  skip {sid}: {e}", flush=True)
     return res
+
+
+STATUS = {}  # 追加データの取り込み結果（data/status.json に出力し、アプリにも表示）
 
 
 ODPT_API = os.environ.get("ODPT_API", "https://api.odpt.org/api/v4")
@@ -352,18 +382,35 @@ ODPT_API = os.environ.get("ODPT_API", "https://api.odpt.org/api/v4")
 
 def odpt_get(key, path, **params):
     from urllib.parse import urlencode
-    q = urlencode({**params, "acl:consumerKey": key})
+    q = urlencode({**params, "acl:consumerKey": key}, safe=":")  # ODPT の書式どおり「:」はそのまま
     return json.loads(http_get(f"{ODPT_API}/{path}?{q}"))
 
 
+def _has_operator(r, operator):
+    op = r.get("odpt:operator")
+    return operator in (op if isinstance(op, list) else [op])
+
+
 def odpt_all(key, typ, operator):
-    """事業者で絞って取得。件数上限に当たったらダンプ（全件）から絞り込む。"""
-    rows = odpt_get(key, typ, **{"odpt:operator": operator})
-    if len(rows) >= 1000:
-        print(f"    {typ}: {len(rows)}件で上限の可能性 → ダンプから取得", flush=True)
-        dumped = odpt_get(key, typ + ".json")
-        rows = [r for r in dumped if operator in (r.get("odpt:operator") if isinstance(r.get("odpt:operator"), list)
-                                                  else [r.get("odpt:operator")])]
+    """事業者で絞って取得。失敗・件数上限のときはダンプ（全件）から絞り込む。"""
+    rows, err = [], None
+    try:
+        rows = odpt_get(key, typ, **{"odpt:operator": operator})
+        print(f"    {typ}: {len(rows)}件", flush=True)
+    except Exception as e:
+        err = e
+        print(f"    {typ}: 検索APIで失敗 ({e})", flush=True)
+    if err or len(rows) >= 1000:
+        try:
+            dumped = odpt_get(key, typ + ".json")
+            full = [r for r in dumped if _has_operator(r, operator)]
+            print(f"    {typ}: ダンプから {len(full)}件", flush=True)
+            if len(full) >= len(rows):
+                rows = full
+        except Exception as e:
+            print(f"    {typ}: ダンプも失敗 ({e})", flush=True)
+            if err:
+                raise err
     return rows
 
 
@@ -416,13 +463,33 @@ def odpt_to_gtfs(key, operator):
     patterns = odpt_all(key, "odpt:BusroutePattern", operator)
     print(f"    poles={len(poles)} patterns={len(patterns)}", flush=True)
 
-    def fetch_tt(pid):
-        return odpt_get(key, "odpt:BusTimetable", **{"odpt:busroutePattern": pid})
+    if not poles:
+        raise FetchError("バス停（BusstopPole）が取得できませんでした")
 
-    timetables = []
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        for rows in ex.map(fetch_tt, [p["owl:sameAs"] for p in patterns]):
-            timetables += rows
+    # 時刻表: まず事業者でまとめて取得し、上限に当たりそうなら系統ごとに取得
+    timetables, fails = [], []
+    try:
+        timetables = odpt_get(key, "odpt:BusTimetable", **{"odpt:operator": operator})
+        print(f"    BusTimetable(事業者一括): {len(timetables)}件", flush=True)
+    except Exception as e:
+        print(f"    BusTimetable(事業者一括): 失敗 ({e})", flush=True)
+    if len(timetables) >= 1000 or not timetables:
+        def fetch_tt(pid):
+            try:
+                return odpt_get(key, "odpt:BusTimetable", **{"odpt:busroutePattern": pid})
+            except Exception as e:
+                fails.append(str(e))
+                return []
+        by_pattern = []
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            for rows in ex.map(fetch_tt, [p["owl:sameAs"] for p in patterns]):
+                by_pattern += rows
+        print(f"    BusTimetable(系統ごと): {len(by_pattern)}件、失敗 {len(fails)}系統"
+              + (f"（例: {fails[0]}）" if fails else ""), flush=True)
+        if len(by_pattern) >= len(timetables):
+            timetables = by_pattern
+    if not timetables:
+        raise FetchError("時刻表（BusTimetable）が0件でした" + (f": {fails[0]}" if fails else ""))
     print(f"    timetables={len(timetables)}", flush=True)
 
     pole_name = {}
@@ -489,6 +556,26 @@ def odpt_to_gtfs(key, operator):
     return buf.getvalue()
 
 
+def build_search_index(out, companies):
+    """全国のバス停をまとめた検索用ファイル（search.json）"""
+    cos, rows = [], []
+    for c in companies:
+        if c.get("ext"):
+            continue
+        path = os.path.join(out, "c", c["id"], "stops.json")
+        if not os.path.exists(path):
+            continue
+        ci = len(cos)
+        pref = "・".join(PREFS[p - 1] for p in c["prefs"] if 1 <= p <= 47)
+        cos.append([c["id"], c["name"], pref])
+        with open(path, encoding="utf-8") as fh:
+            for st in json.load(fh):
+                rows.append([st["n"], st["y"], ci, st["k"]])
+    rows.sort(key=lambda r: (r[1], r[0]))
+    dump(os.path.join(out, "search.json"), {"c": cos, "s": rows})
+    print(f"search index: {len(rows)} stops", flush=True)
+
+
 def pick(c):
     d = {k: c.get(k, "") for k in ("id", "name", "rt", "vp", "lic", "src", "ext", "note")}
     d = {k: v for k, v in d.items() if v or k in ("id", "name")}
@@ -527,6 +614,8 @@ def main():
                       [pick(c) for c in others]})
     dump(os.path.join(a.out, "index.json"),
          {"updated": datetime.now(JST).strftime("%Y-%m-%d %H:%M"), "prefs": prefs})
+    build_search_index(a.out, companies)
+    dump(os.path.join(a.out, "status.json"), STATUS)
     print(f"done: {len(companies)} companies", flush=True)
     if not companies:
         sys.exit(1)

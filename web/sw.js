@@ -1,5 +1,5 @@
 // オフライン対応: 画面はキャッシュ優先、時刻表データはネット優先（圏外時はキャッシュ）
-const V = "bus-v1";
+const V = "bus-v2";
 const SHELL = ["./", "index.html", "style.css", "app.js", "config.js", "manifest.webmanifest", "icons/icon-192.png"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(V).then(c => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener("activate", e => {
