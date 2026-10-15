@@ -86,5 +86,28 @@ if len(sys.argv) > 1 and sys.argv[1] == "demo":
         {"type": "link", "id": "osaka-citybus", "name": "大阪シティバス", "prefs": [27], "url": "https://oc.bus-vision.jp/osakacitybus/",
          "note": "時刻表データが公開されていないため、公式の接近情報サービスを開きます"},
     ], open(src, "w"), ensure_ascii=False)
+    # 東急（テスト）: 八雲に2方向（目黒駅方面=のりば1、渋谷駅方面=のりば2）、6時〜23時に10分おき
+    POLES[:] = [
+        {"owl:sameAs": "odpt.BusstopPole:TokyuBus.Meguro.1", "dc:title": "目黒駅", "odpt:kana": "メグロエキ"},
+        {"owl:sameAs": "odpt.BusstopPole:TokyuBus.Yakumo.1", "dc:title": "八雲", "odpt:kana": "ヤクモ", "odpt:platformNumber": "1"},
+        {"owl:sameAs": "odpt.BusstopPole:TokyuBus.Yakumo.2", "dc:title": "八雲", "odpt:kana": "ヤクモ", "odpt:platformNumber": "2"},
+        {"owl:sameAs": "odpt.BusstopPole:TokyuBus.Shibuya.1", "dc:title": "渋谷駅", "odpt:kana": "シブヤエキ"},
+    ]
+    PATTERNS[:] = [{"owl:sameAs": "P.A", "dc:title": "黒07 渋谷駅→目黒駅"}, {"owl:sameAs": "P.B", "dc:title": "黒07 目黒駅→渋谷駅"}]
+    TIMETABLES[:] = []
+    n = 0
+    for cal in ("odpt.Calendar:Weekday", "odpt.Calendar:SaturdayHoliday"):
+        for pat, seq, dest, off in (("P.A", ["Shibuya.1", "Yakumo.1", "Meguro.1"], "目黒駅", 0), ("P.B", ["Meguro.1", "Yakumo.2", "Shibuya.1"], "渋谷駅", 4)):
+            for t in range(6 * 60 + off, 23 * 60, 10):
+                n += 1
+                TIMETABLES.append({"owl:sameAs": f"T{n}", "odpt:calendar": cal, "odpt:busroutePattern": pat,
+                                   "odpt:busTimetableObject": [{"odpt:index": i, "odpt:busstopPole": "odpt.BusstopPole:TokyuBus." + st,
+                                   "odpt:departureTime": f"{(t + i * 9) // 60:02d}:{(t + i * 9) % 60:02d}", "odpt:destinationSign": dest}
+                                   for i, st in enumerate(seq)]})
+    srcs = json.load(open(src))
+    for x in srcs:
+        if x["id"] == "tokyu--bus":
+            x.update(navi="https://tokyu.bus-location.jp/blsys/navis?VID=top&EID=spr", navi_label="東急バスナビ")
+    json.dump(srcs, open(src, "w"), ensure_ascii=False)
     sys.argv = ["build_data.py", "--no-repo", "--sources", src, "--out", os.path.join(web, "data")]
     b.main()

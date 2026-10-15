@@ -164,3 +164,27 @@ button.row:active, a.row:active { background: var(--press); }
 .note.warn { color: var(--soon); }
 input[type="search"]::-webkit-search-cancel-button { -webkit-appearance: none; display: none; }
 .note.warn { overflow-wrap: anywhere; }
+
+/* 方面（のりば）切り替え */
+.dirs { display: flex; gap: 8px; overflow-x: auto; padding: 0 16px 12px; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.dirs::-webkit-scrollbar { display: none; }
+.chip { flex: none; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 7px 12px; border-radius: 16px;
+  background: var(--card); color: var(--text); font-size: 14px; font-weight: 500; border: 1px solid var(--line); white-space: nowrap; max-width: 78vw; overflow: hidden; text-overflow: ellipsis; }
+.chip small { font-size: 11px; color: var(--sub); font-weight: 600; }
+.chip.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.chip.on small { color: rgba(255,255,255,.85); }
+
+/* 到着予定時刻（ダイヤ） */
+.hero .due { font-size: 15px; color: var(--sub); margin: 2px 0 10px; }
+.hero .due b { color: var(--text); font-size: 20px; font-variant-numeric: tabular-nums; margin: 0 2px; }
+.hero .meta.pills { margin-top: 6px; }
+.hero .meta.pills:empty { display: none; }
+.eta-col { flex: none; text-align: right; min-width: 74px; }
+.eta-col .min { min-width: 0; }
+.due-s { font-size: 12px; color: var(--sub); font-variant-numeric: tabular-nums; margin-top: 1px; }
+.open-ext.alt { background: transparent; color: var(--accent); border: 1.5px solid var(--accent); height: 44px; font-size: 16px; margin-top: 14px; }
+.open-ext.alt .chev { stroke: var(--accent); }
+.note.warn-soft { color: var(--sub); background: rgba(255,179,0,.12); border-radius: 10px; padding: 10px 12px; margin: 12px 16px 0; }
+.chip { justify-content: center; min-height: 44px; }
+.row .s.dir { color: var(--text); opacity: .75; }
+.due-s.late { color: var(--soon); }

@@ -3,7 +3,9 @@
     "type": "gtfs",
     "id": "toei--bus",
     "name": "都営バス",
-    "prefs": [13],
+    "prefs": [
+      13
+    ],
     "url": "https://api-public.odpt.org/api/v4/files/Toei/data/ToeiBus-GTFS.zip",
     "vp": "https://api-public.odpt.org/api/v4/gtfs/realtime/ToeiBus",
     "lic": "CC BY 4.0",
@@ -13,17 +15,24 @@
     "type": "odpt",
     "id": "tokyu--bus",
     "name": "東急バス",
-    "prefs": [13, 14],
+    "prefs": [
+      13,
+      14
+    ],
     "operator": "odpt.Operator:TokyuBus",
     "lic": "公共交通オープンデータ基本ライセンス",
     "src": "東急バス（公共交通オープンデータセンター）",
-    "note": "時刻表から計算しています（リアルタイムの遅れは反映されません）"
+    "note": "時刻表（ダイヤ）から計算しています。実際の位置は東急バスナビで確認できます",
+    "navi": "https://tokyu.bus-location.jp/blsys/navis?VID=top&EID=spr",
+    "navi_label": "東急バスナビ"
   },
   {
     "type": "link",
     "id": "osaka-citybus",
     "name": "大阪シティバス",
-    "prefs": [27],
+    "prefs": [
+      27
+    ],
     "url": "https://oc.bus-vision.jp/osakacitybus/",
     "src": "大阪シティバス",
     "note": "時刻表データが公開されていないため、公式の接近情報サービスを開きます"

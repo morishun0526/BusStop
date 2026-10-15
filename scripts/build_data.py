@@ -341,7 +341,7 @@ def build_sources(out, path, existing_ids):
         STATUS[sid] = {"name": src["name"], "ok": False, "msg": ""}
         base = {"id": sid, "name": src["name"], "prefs": src.get("prefs", []), "rt": src.get("rt", ""),
                 "vp": src.get("vp", ""), "lic": src.get("lic", ""), "src": src.get("src", ""),
-                "note": src.get("note", "")}
+                "note": src.get("note", ""), "navi": src.get("navi", ""), "navi_label": src.get("navi_label", "")}
         try:
             if src["type"] == "link":  # データ非公開 → 公式の接近情報ページへのリンクだけ置く
                 res.append({**base, "ext": src["url"]})
@@ -577,7 +577,7 @@ def build_search_index(out, companies):
 
 
 def pick(c):
-    d = {k: c.get(k, "") for k in ("id", "name", "rt", "vp", "lic", "src", "ext", "note")}
+    d = {k: c.get(k, "") for k in ("id", "name", "rt", "vp", "lic", "src", "ext", "note", "navi", "navi_label")}
     d = {k: v for k, v in d.items() if v or k in ("id", "name")}
     d["y"] = reading_of(c["name"], "")  # よみがな（ひらがな検索用）
     return d

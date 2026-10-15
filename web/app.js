@@ -22,7 +22,7 @@ const store = {
 };
 let favs = store.get("favs", []); // [{cid, k, name, co}]
 const saveFavs = () => store.set("favs", favs);
-const isFav = (cid, k) => favs.some(f => f.cid === cid && f.k === k);
+const isFav = (cid, k, p = "") => favs.some(f => f.cid === cid && f.k === k && (f.p || "") === p);
 
 /* ================================================================ データ取得 */
 const cache = new Map();
@@ -195,7 +195,7 @@ function applyVP(v, dep, schedEtaSec, nowMs) {
 }
 
 /* ================================================================ 次のバスを計算 */
-async function upcoming(cid, k, { limit = 20 } = {}) {
+async function upcoming(cid, k, { limit = 20, pole = "" } = {}) {
   const [stop, cal, co] = await Promise.all([getJSON(`c/${cid}/s/${k}.json`), getJSON(`c/${cid}/cal.json`), getCompany(cid)]);
   const now = Date.now();
   const today = jstParts(now), yest = jstParts(now - 86400000), tom = jstParts(now + 86400000);
@@ -204,6 +204,7 @@ async function upcoming(cid, k, { limit = 20 } = {}) {
   const consider = (d, offset) => {
     const act = {};
     for (const dep of stop.d) {
+      if (pole && dep[6] !== pole) continue; // 方面（のりば）で絞り込み
       const sid = dep[3];
       if (!(sid in act)) act[sid] = serviceOn(cal, sid, d);
       if (!act[sid]) continue;
@@ -285,7 +286,7 @@ function renderHome() {
     <div class="group ${editing ? "editing" : ""}" id="favList">
       ${favs.map((f, i) => `
         <div class="row fav" data-i="${i}" role="${editing ? "listitem" : "button"}">
-          <div class="main"><div class="t">${esc(f.name)}</div><div class="s">${esc(f.co)}</div></div>
+          <div class="main"><div class="t">${esc(f.name)}</div>${f.dir ? `<div class="s dir">${esc(f.dir)}</div>` : ""}<div class="s">${esc(f.co)}</div></div>
           ${editing
             ? `<button class="minus" data-del="${i}" aria-label="${esc(f.name)}を削除"><i></i></button>
                <span class="handle" aria-hidden="true">${ICON.grip}</span>`
@@ -308,17 +309,17 @@ function renderHome() {
     list.querySelectorAll(".row").forEach(r => r.onclick = () => {
       const f = favs[+r.dataset.i];
       if (f.ext) window.open(f.ext, "_blank", "noopener");
-      else go(`#/c/${encodeURIComponent(f.cid)}/${f.k}`);
+      else go(`#/c/${encodeURIComponent(f.cid)}/${f.k}${f.p ? "/" + encodeURIComponent(f.p) : ""}`);
     });
     const refresh = () => favs.forEach(async (f, i) => {
       const box = $("#eta" + i);
       if (!box || f.ext) return;
       try {
-        const u = await upcoming(f.cid, f.k, { limit: 3 });
+        const u = await upcoming(f.cid, f.k, { limit: 3, pole: f.p || "" });
         const next = u.items.find(x => !x.canceled);
         if (!next) { box.innerHTML = `<div class="sub">本日終了</div>`; return; }
         box.innerHTML = (next.day ? `<div class="sub">明日 ${hhmm(next.dep[0])}</div>` : minHTML(next)) +
-          `<div class="sub">${esc(next.dep[2] || next.dep[1])}${next.live ? " ●" : ""}</div>`;
+          `<div class="sub">${hhmm(next.dep[0])}着予定${next.live ? " ●" : ""}</div>`;
       } catch { box.innerHTML = `<div class="sub">取得できません</div>`; }
     });
     refresh();
@@ -449,7 +450,7 @@ function starButton(cid, k, makeFav) {
   const star = $("#star");
   star.onclick = () => {
     if (isFav(cid, k)) {
-      favs = favs.filter(f => !(f.cid === cid && f.k === k));
+      favs = favs.filter(f => !(f.cid === cid && f.k === k && !f.p));
       toast("お気に入りから外しました");
     } else {
       favs.push(makeFav());
@@ -510,28 +511,48 @@ async function renderCompany(cid) {
 }
 
 /* ================================================================ 到着表示 */
-async function renderStop(cid, k) {
+// のりば（stop_id）ごとの方面ラベル: 「のりば1・目黒駅／渋谷駅 方面」
+function directionsOf(stop) {
+  const by = {};
+  for (const d of stop.d) {
+    const o = by[d[6]] || (by[d[6]] = { id: d[6], heads: {} });
+    if (d[2]) o.heads[d[2]] = (o.heads[d[2]] || 0) + 1;
+  }
+  return Object.values(by).map(o => {
+    const top = Object.entries(o.heads).sort((a, b) => b[1] - a[1]).slice(0, 2).map(x => x[0]);
+    const code = stop.p[o.id];
+    return { id: o.id, code, label: (top.length ? top.join("／") + " 方面" : "方面不明") };
+  }).sort((a, b) => (a.code || "").localeCompare(b.code || "", "ja", { numeric: true }) || a.label.localeCompare(b.label, "ja"));
+}
+const clock = ms => hhmm(jstParts(ms).sec);
+
+async function renderStop(cid, k, poleParam) {
   const co = await getCompany(cid).catch(() => null);
   const from = history.state && history.state.from;
+  let sel = poleParam || ""; // 選択中の方面（"" = すべて）
   setBar({
     title: "", back: { label: from === "#/" ? "お気に入り" : from === "#/search" ? "検索" : "バス停", to: `#/c/${encodeURIComponent(cid)}` },
-    right: `<button class="star ${isFav(cid, k) ? "on" : ""}" id="star" aria-label="お気に入り">${ICON.star}</button>`,
+    right: `<button class="star" id="star" aria-label="お気に入り">${ICON.star}</button>`,
   });
   view.innerHTML = `<div class="spinner"></div>`;
   const star = $("#star");
-  let stopName = "";
+  let stopName = "", dirs = [];
+  const dirOf = id => dirs.find(d => d.id === id);
+  const dirText = id => { const d = dirOf(id); return d ? (d.code ? `のりば${d.code}・` : "") + d.label : ""; };
+  const syncStar = () => star.classList.toggle("on", isFav(cid, k, sel));
   star.onclick = () => {
-    if (isFav(cid, k)) {
-      favs = favs.filter(f => !(f.cid === cid && f.k === k));
+    if (isFav(cid, k, sel)) {
+      favs = favs.filter(f => !(f.cid === cid && f.k === k && (f.p || "") === sel));
       toast("お気に入りから外しました");
     } else {
-      favs.push({ cid, k, name: stopName, co: co ? co.name : "" });
-      toast("お気に入りに追加しました");
+      favs.push({ cid, k, p: sel, dir: sel ? dirText(sel) : "", name: stopName, co: co ? co.name : "" });
+      toast(sel ? "この方面をお気に入りに追加しました" : "お気に入りに追加しました");
     }
     saveFavs();
-    star.classList.toggle("on", isFav(cid, k));
+    syncStar();
     star.classList.add("pop"); setTimeout(() => star.classList.remove("pop"), 160);
   };
+  syncStar();
 
   let data = null;
   const draw = () => {
@@ -541,28 +562,48 @@ async function renderStop(cid, k) {
     const live = data.rt && data.rt.ok;
     const first = items.find(x => !x.canceled);
     const pole = d => { const p = data.stop.p[d[6]]; return p ? `<span class="pill">${esc(p)}番のりば</span>` : ""; };
+    const dirPill = d => (!sel && dirs.length > 1 && !data.stop.p[d[6]]) ? `<span class="pill">${esc(dirOf(d[6]) ? dirOf(d[6]).label : "")}</span>` : "";
     const nearPill = x => x.near === undefined ? "" : `<span class="pill live">${x.near === 0 ? "到着間近" : x.near + "つ前の停留所"}</span>`;
     const delayPill = x => (x.live && x.delay >= 60 ? `<span class="pill late">${Math.round(x.delay / 60)}分遅れ</span>`
       : x.live && x.near === undefined ? `<span class="pill live">運行情報</span>` : "") + nearPill(x);
+    // 到着予定時刻（ダイヤ）と、遅れがあるときの見込み時刻
+    const due = x => {
+      const plan = hhmm(x.dep[0]);
+      if (x.live && x.delay >= 60) return `ダイヤ ${plan} → 見込み <b>${clock(now + x.eta * 1000)}</b>`;
+      return `到着予定 <b>${plan}</b>（ダイヤ）`;
+    };
     let html = `<div class="stop-head"><div class="name">${esc(data.stop.n)}</div><div class="co">${esc(co ? co.name : "")}</div></div>`;
+    if (dirs.length > 1) {
+      html += `<div class="dirs" role="tablist">
+        <button class="chip ${sel ? "" : "on"}" data-p="">すべて</button>
+        ${dirs.map(d => `<button class="chip ${sel === d.id ? "on" : ""}" data-p="${esc(d.id)}">${d.code ? `<small>のりば${esc(d.code)}</small>` : ""}${esc(d.label)}</button>`).join("")}
+      </div>`;
+    }
     if (!first) {
-      html += `<div class="empty">${ICON.bus}<br>このバス停から乗れる便はありません。</div>`;
+      html += `<div class="empty">${ICON.bus}<br>${sel ? "この方面の" : "このバス停から乗れる"}便はありません。</div>`;
     } else {
       const rest = items.filter(x => x !== first);
       const fm = Math.floor(Math.max(0, first.eta) / 60);
-      html += `<div class="hero ${first.eta < 240 ? "soon" : ""}">
-        <div class="lab">${first.day ? "本日の運行は終了しました ・ 明日の始発" : "次のバス"}</div>
+      html += `<div class="hero ${!first.day && first.eta < 240 ? "soon" : ""}">
+        <div class="lab">${first.day ? "本日の運行は終了しました ・ 明日の始発" : live ? "次のバス" : "次のバス（時刻表どおりの場合）"}</div>
         <div class="big">${first.day ? `<b>${hhmm(first.dep[0])}</b><span>発</span>`
           : first.eta < 60 ? `<b style="font-size:48px">まもなく到着</b>` : `<span>あと</span><b>${fm}</b><span>分</span>`}</div>
+        ${first.day ? "" : `<div class="due">${due(first)}</div>`}
         <div class="meta">${first.dep[1] ? `<span class="pill route">${esc(first.dep[1])}</span>` : ""}${esc(first.dep[2])} 行き</div>
-        <div class="meta" style="color:var(--sub);margin-top:4px">${hhmm(first.dep[0])} 発（時刻表）${pole(first.dep)}${delayPill(first)}</div>
+        <div class="meta pills">${pole(first.dep)}${dirPill(first.dep)}${delayPill(first)}</div>
+        ${co && co.navi ? `<a class="open-ext alt" href="${esc(co.navi)}" target="_blank" rel="noopener">${esc(co.navi_label || "公式の接近情報")}で現在位置を見る ${ICON.ext}</a>` : ""}
       </div>`;
+      if (!live && co && !co.rt && !co.vp && !first.day) {
+        html += `<p class="note warn-soft">この会社はリアルタイム情報が公開されていないため、時刻表（ダイヤ）どおりに来た場合の時間です。渋滞などで遅れることがあります。</p>`;
+      }
       if (rest.length) {
         html += `<div class="section-h">このあとのバス</div><div class="group">${rest.map(x => `
           <div class="row arr ${x.canceled ? "cancel" : ""}">
             <div class="main"><div class="t">${x.dep[1] ? `<span class="pill route">${esc(x.dep[1])}</span>` : ""}${esc(x.dep[2])} 行き</div>
-            <div class="s">${x.day ? "明日 " : ""}${hhmm(x.dep[0])} 発 ${pole(x.dep)}${delayPill(x)}</div></div>
-            ${x.day ? `<div class="min">${hhmm(x.dep[0])}</div>` : minHTML(x)}
+            <div class="s">${x.day ? "明日 " : ""}${pole(x.dep)}${dirPill(x.dep)}${delayPill(x)}</div></div>
+            <div class="eta-col">${x.day ? `<div class="min">${hhmm(x.dep[0])}</div><div class="due-s">明日の到着予定</div>`
+              : minHTML(x) + `<div class="due-s">${hhmm(x.dep[0])}着予定</div>` +
+                (x.live && x.delay >= 60 ? `<div class="due-s late">見込み ${clock(now + x.eta * 1000)}</div>` : "")}</div>
           </div>`).join("")}</div>`;
       }
     }
@@ -574,14 +615,28 @@ async function renderStop(cid, k) {
       <p class="note">道路状況により前後することがあります。${co && co.note ? esc(co.note) + "。" : ""}${co && co.lic ? `データ: ${esc(co.src || co.name + "、GTFSデータリポジトリ")}（${esc(co.lic)}）` : ""}</p>`;
     view.innerHTML = html;
     $("#reload").onclick = load;
+    view.querySelectorAll(".dirs .chip").forEach(b => b.onclick = () => {
+      sel = b.dataset.p;
+      history.replaceState(history.state, "", `#/c/${encodeURIComponent(cid)}/${k}${sel ? "/" + encodeURIComponent(sel) : ""}`);
+      syncStar();
+      load();
+    });
+    const on = view.querySelector(".dirs .chip.on");
+    if (on) on.scrollIntoView({ inline: "center", block: "nearest" });
   };
   const load = async () => {
     try {
-      data = await upcoming(cid, k);
+      data = await upcoming(cid, k, { pole: sel });
       stopName = data.stop.n;
+      dirs = directionsOf(data.stop);
+      if (sel && !dirOf(sel)) { sel = ""; syncStar(); } // データ更新でのりばが無くなった場合
       // 名前の更新（データ側で事業者名などが変わった場合）
-      const f = favs.find(f => f.cid === cid && f.k === k);
-      if (f && (f.name !== stopName || (co && f.co !== co.name))) { f.name = stopName; if (co) f.co = co.name; saveFavs(); }
+      favs.filter(f => f.cid === cid && f.k === k).forEach(f => {
+        if (f.name !== stopName) f.name = stopName;
+        if (co) f.co = co.name;
+        if (f.p && dirOf(f.p)) f.dir = dirText(f.p);
+      });
+      saveFavs();
       draw();
     } catch (e) {
       view.innerHTML = `<div class="empty">このバス停のデータが見つかりません。<br>データ更新でバス停が廃止・名称変更された可能性があります。</div>`;
@@ -603,7 +658,7 @@ function route(keepScroll) {
   else {
     editing = false;
     if (parts[0] === "search") renderSearch();
-    else if (parts[0] === "c" && parts[1] && parts[2]) renderStop(parts[1], parts[2]);
+    else if (parts[0] === "c" && parts[1] && parts[2]) renderStop(parts[1], parts[2], parts[3] || "");
     else if (parts[0] === "c" && parts[1]) renderCompany(parts[1]);
     else go("#/", true);
   }
